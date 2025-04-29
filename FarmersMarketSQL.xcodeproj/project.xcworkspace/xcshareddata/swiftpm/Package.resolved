@@ -1,0 +1,15 @@
+{
+  "originHash" : "0170cf97ca10b2b06abf45b2d799505997d926773ab82aa69e7e5432fc20ae7d",
+  "pins" : [
+    {
+      "identity" : "mysql-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/novi/mysql-swift.git",
+      "state" : {
+        "revision" : "74f32e3004e305024afded0c0540eafd822e149b",
+        "version" : "0.9.5"
+      }
+    }
+  ],
+  "version" : 3
+}
