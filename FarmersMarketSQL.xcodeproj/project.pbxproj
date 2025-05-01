@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		AB39C8772DC0A6B300AFAF3D /* MySQLNIO in Frameworks */ = {isa = PBXBuildFile; productRef = AB39C8762DC0A6B300AFAF3D /* MySQLNIO */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		AB39C8532DC09B5F00AFAF3D /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AB39C8772DC0A6B300AFAF3D /* MySQLNIO in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +83,7 @@
 				AB39C8442DC09B5B00AFAF3D /* FarmersMarketSQL */,
 				AB39C8552DC09B5F00AFAF3D /* FarmersMarketSQLTests */,
 				AB39C85F2DC09B5F00AFAF3D /* FarmersMarketSQLUITests */,
+				AB39C8752DC0A6B200AFAF3D /* Frameworks */,
 				AB39C8432DC09B5B00AFAF3D /* Products */,
 			);
 			sourceTree = "<group>";
@@ -90,6 +96,13 @@
 				AB39C85C2DC09B5F00AFAF3D /* FarmersMarketSQLUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		AB39C8752DC0A6B200AFAF3D /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -112,6 +125,7 @@
 			);
 			name = FarmersMarketSQL;
 			packageProductDependencies = (
+				AB39C8762DC0A6B300AFAF3D /* MySQLNIO */,
 			);
 			productName = FarmersMarketSQL;
 			productReference = AB39C8422DC09B5B00AFAF3D /* FarmersMarketSQL.app */;
@@ -198,6 +212,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AB39C8712DC09EDA00AFAF3D /* XCRemoteSwiftPackageReference "mysql-swift" */,
+				AB39C8742DC0A61B00AFAF3D /* XCRemoteSwiftPackageReference "mysql-nio" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AB39C8432DC09B5B00AFAF3D /* Products */;
@@ -569,7 +584,23 @@
 				minimumVersion = 0.9.5;
 			};
 		};
+		AB39C8742DC0A61B00AFAF3D /* XCRemoteSwiftPackageReference "mysql-nio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/vapor/mysql-nio";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.7.2;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AB39C8762DC0A6B300AFAF3D /* MySQLNIO */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AB39C8742DC0A61B00AFAF3D /* XCRemoteSwiftPackageReference "mysql-nio" */;
+			productName = MySQLNIO;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = AB39C83A2DC09B5B00AFAF3D /* Project object */;
 }

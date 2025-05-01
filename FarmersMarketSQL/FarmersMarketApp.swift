@@ -1,9 +1,5 @@
-//
 //  FarmersMarketApp.swift
-//  FarmersMarketSQL
-//
-//  Created by Kyle Chiu on 4/28/25.
-//
+//  FarmersMarket
 
 import SwiftUI
 
@@ -15,8 +11,6 @@ struct FarmersMarketApp: App {
         }
     }
 }
-
-// MARK: - HomeView
 
 struct HomeView: View {
     @State private var searchText = ""
@@ -36,14 +30,13 @@ struct HomeView: View {
             VStack {
                 HStack {
                     SearchBar(text: $searchText, placeholder: "Search markets")
-                    
                     Picker("Search Type", selection: $searchType) {
                         ForEach(SearchType.allCases, id: \.self) { type in
                             Text(type.rawValue).tag(type)
                         }
                     }
                     .pickerStyle(MenuPickerStyle())
-                    .frame(width: 120)
+                    .frame(width: 100)
                     .padding(.trailing, 8)
                 }
                 .padding()
@@ -60,7 +53,22 @@ struct HomeView: View {
         .onChange(of: searchText) { _ in filterMarkets() }
         .onChange(of: searchType) { _ in filterMarkets() }
         .onAppear {
-            loadMarkets()
+            Task {
+                do {
+                    try await DatabaseManager.shared.connect(
+                        host: "localhost",
+                        port: 3306,
+                        username: "farmappuser",
+                        password: "your_password"
+                    )
+
+                    let loadedMarkets = try await DatabaseManager.shared.loadAllData()
+                    markets = loadedMarkets
+                    filteredMarkets = loadedMarkets
+                } catch {
+                    print("Error loading markets: \(error)")
+                }
+            }
         }
     }
 
@@ -72,37 +80,27 @@ struct HomeView: View {
             case .name:
                 filteredMarkets = markets.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
             case .city:
-                filteredMarkets = markets.filter { $0.city.localizedCaseInsensitiveContains(searchText) }
+                filteredMarkets = markets.filter { $0.city?.localizedCaseInsensitiveContains(searchText) ?? false }
             case .state:
-                filteredMarkets = markets.filter { $0.state.localizedCaseInsensitiveContains(searchText) }
+                filteredMarkets = markets.filter { $0.state?.localizedCaseInsensitiveContains(searchText) ?? false }
             case .zip:
-                filteredMarkets = markets.filter { $0.zip.localizedCaseInsensitiveContains(searchText) }
+                filteredMarkets = markets.filter { $0.zip?.localizedCaseInsensitiveContains(searchText) ?? false }
             }
         }
     }
-
-    private func loadMarkets() {
-        // TODO: Replace this with real API call
-        self.markets = [
-            Market(id: 1, name: "Market 1", city: "City 1", state: "State 1", zip: "12345"),
-            Market(id: 2, name: "Market 2", city: "City 2", state: "State 2", zip: "67890"),
-            Market(id: 3, name: "Market 3", city: "City 3", state: "State 3", zip: "10112"),
-            Market(id: 4, name: "Market 4", city: "City 4", state: "State 4", zip: "13145"),
-        ]
-        self.filteredMarkets = self.markets
-    }
 }
 
-// MARK: - Components
+extension Market: Identifiable {
+    var id: Int { fmid }
+}
 
 struct MarketRow: View {
     let market: Market
 
     var body: some View {
         VStack(alignment: .leading) {
-            Text(market.name)
-                .font(.headline)
-            Text("\(market.city), \(market.state) \(market.zip)")
+            Text(market.name).font(.headline)
+            Text("\(market.city ?? "Unknown"), \(market.state ?? "") \(market.zip ?? "")")
                 .font(.subheadline)
                 .foregroundColor(.gray)
         }
@@ -120,9 +118,7 @@ struct SearchBar: View {
                 .background(Color(.systemGray6))
                 .cornerRadius(8)
             if !text.isEmpty {
-                Button(action: {
-                    text = ""
-                }) {
+                Button(action: { text = "" }) {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundColor(.gray)
                 }
@@ -131,46 +127,31 @@ struct SearchBar: View {
     }
 }
 
-struct Market: Identifiable, Codable {
-    let id: Int
-    let name: String
-    let city: String
-    let state: String
-    let zip: String
-}
-
-// MARK: - Detail Views
-
 struct MarketDetailView: View {
     let market: Market
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("\(market.city), \(market.state) \(market.zip)")
+            VStack(alignment: .leading, spacing: 10) {
+                Text("\(market.city ?? ""), \(market.state ?? "") \(market.zip ?? "")")
                     .font(.subheadline)
                     .foregroundColor(.gray)
 
                 Divider()
 
-                Text("Available Foods")
-                    .font(.title2)
-                    .bold()
-                Text("Baked goods, Cheese, Crafts, Flowers, Eggs, Seafood, Herbs, Vegetables, Honey, etc.")
-                    .font(.body)
+                Text("Available Foods").font(.title2).bold()
+                Text(market.products.map { $0.category }.joined(separator: ", "))
 
                 Divider()
 
-                Text("Payment Methods")
-                    .font(.title2)
-                    .bold()
-                Text("Credit, WIC, WICcash, SFMNP, SNAP")
-                    .font(.body)
+                Text("Payment Methods").font(.title2).bold()
+                Text(market.payments.map { $0.rawValue }.joined(separator: ", "))
 
-                Divider()
+                Spacer()
 
                 NavigationLink(destination: ReviewsView(market: market)) {
                     Text("View Reviews")
+                        .font(.headline)
                         .padding()
                         .frame(maxWidth: .infinity)
                         .background(Color.blue)
@@ -180,6 +161,7 @@ struct MarketDetailView: View {
 
                 NavigationLink(destination: AddReviewView(market: market)) {
                     Text("Write a Review")
+                        .font(.headline)
                         .padding()
                         .frame(maxWidth: .infinity)
                         .background(Color.green)
@@ -193,25 +175,44 @@ struct MarketDetailView: View {
     }
 }
 
-// Dummy Views
 struct ReviewsView: View {
     let market: Market
+    @State private var reviews: [Review] = []
+
     var body: some View {
-        Text("Reviews for \(market.name)")
+        List(reviews, id: \.reviewer) { review in
+            VStack(alignment: .leading) {
+                Text(review.reviewer).font(.headline)
+                Text(review.comment)
+                HStack {
+                    ForEach(0..<review.stars, id: \.self) { _ in
+                        Image(systemName: "star.fill").foregroundColor(.yellow)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Reviews")
+        .onAppear {
+            reviews = market.reviews
+        }
     }
 }
 
 struct AddReviewView: View {
     let market: Market
+    @State private var reviewerName = ""
+    @State private var comment = ""
+    @State private var rating = 0
+
     var body: some View {
-        Text("Write a Review for \(market.name)")
-    }
-}
-
-
-// Preview for HomeView
-struct HomeView_Previews: PreviewProvider {
-    static var previews: some View {
-        HomeView()
+        Form {
+            TextField("Your Name", text: $reviewerName)
+            TextField("Your Review", text: $comment)
+            Stepper("Rating: \(rating)", value: $rating, in: 0...5)
+            Button("Submit Review") {
+                print("Review: \(reviewerName), \(comment), \(rating) stars")
+            }
+        }
+        .navigationTitle("Write a Review")
     }
 }
