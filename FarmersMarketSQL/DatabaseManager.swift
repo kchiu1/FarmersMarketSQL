@@ -7,13 +7,13 @@ class DatabaseManager {
     
     private let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     private var connection: MySQLConnection?
-    
-    private var allMarkets: [Market] = []
+    private let lock = NSLock()
+    private var isConnected = false
     
     private init() {}
 
-    // MARK: - Connection
-
+    // MARK: - Connection Management
+    
     func connect(
         host: String = "localhost",
         port: Int = 3306,
@@ -21,145 +21,211 @@ class DatabaseManager {
         password: String = "your_password",
         database: String = "farmersmarkets"
     ) async throws {
-        self.connection = try await MySQLConnection.connect(
-            to: .makeAddressResolvingHost(host, port: port),
-            username: username,
-            database: database,
-            password: password,
-            tlsConfiguration: nil, // explicitly disable SSL/TLS
-            on: eventLoopGroup.next()
-        ).get()
+        lock.lock()
+        defer { lock.unlock() }
+        
+        guard !isConnected else { return }
+        
+        do {
+            let newConnection = try await MySQLConnection.connect(
+                to: .makeAddressResolvingHost(host, port: port),
+                username: username,
+                database: database,
+                password: password,
+                tlsConfiguration: nil,
+                on: eventLoopGroup.next()
+            ).get()
+            
+            self.connection = newConnection
+            self.isConnected = true
+        } catch {
+            self.isConnected = false
+            throw DatabaseError.connectionFailed("Failed to connect: \(error.localizedDescription)")
+        }
     }
 
-    // MARK: - Data Loading
+    func disconnect() {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        guard isConnected else { return }
+        
+        do {
+            try connection?.close().wait()
+            connection = nil
+            isConnected = false
+        } catch {
+            print("Error disconnecting: \(error.localizedDescription)")
+        }
+    }
+    
+    deinit {
+        disconnect()
+    }
 
-    func loadAllData() async throws -> [Market] {
-        guard let connection = connection else {
+    // MARK: - Market Data Loading
+    
+    func loadMarkets(page: Int, pageSize: Int) async throws -> [Market] {
+        guard isConnected else {
             throw DatabaseError.notConnected
         }
-
-        let markets = try await loadMarkets(connection: connection)
-        allMarkets = markets
-
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            for index in allMarkets.indices {
-                group.addTask { [self] in
-                    try await loadAdditionalData(for: &allMarkets[index], connection: connection)
-                }
-            }
-            try await group.waitForAll()
-        }
-
-        return allMarkets
-    }
-
-    private func loadMarkets(connection: MySQLConnection) async throws -> [Market] {
+        
+        let offset = page * pageSize
         let query = """
         SELECT i.fmid, i.name, i.street, i.city, i.county, i.state, i.zip, 
                i.x as latitude, i.y as longitude
         FROM FMInfo i
+        ORDER BY i.name
+        LIMIT ? OFFSET ?
         """
+        
+        do {
+            let rows = try await connection!.query(query, [
+                .init(int: pageSize),
+                .init(int: offset)
+            ]).get()
+            
+            var markets: [Market] = []
+            for row in rows {
+                guard let fmid = row.column("fmid")?.int,
+                      let name = row.column("name")?.string else {
+                    continue
+                }
+                
+                let market = Market(
+                    fmid: fmid,
+                    name: name,
+                    street: row.column("street")?.string,
+                    city: row.column("city")?.string,
+                    county: row.column("county")?.string,
+                    state: row.column("state")?.string,
+                    zip: row.column("zip")?.string,
+                    latitude: row.column("latitude")?.double,
+                    longitude: row.column("longitude")?.double,
+                    website: nil,
+                    facebook: nil,
+                    twitter: nil,
+                    youtube: nil,
+                    otherMedia: nil,
+                    seasons: [],
+                    payments: [],
+                    products: [],
+                    location: nil
+                )
+                markets.append(market)
+            }
+            return markets
+        } catch {
+            throw DatabaseError.queryFailed("Market query failed: \(error.localizedDescription)")
+        }
+    }
+    
+    func loadAdditionalData(for market: inout Market) async throws {
+        guard isConnected else {
+            throw DatabaseError.notConnected
+        }
+        
+        async let media = loadMedia(for: market.fmid)
+        async let seasons = loadSeasons(for: market.fmid)
+        async let payments = loadPayments(for: market.fmid)
+        async let products = loadProducts(for: market.fmid)
+        async let location = loadLocation(for: market.zip)
 
-        let rows = try await connection.query(query).get()
-
-        return rows.map { row in
-            Market(
-                fmid: row.column("fmid")?.int ?? 0,
-                name: row.column("name")?.string ?? "Unknown Market",
-                street: row.column("street")?.string,
-                city: row.column("city")?.string,
-                county: row.column("county")?.string,
-                state: row.column("state")?.string,
-                zip: row.column("zip")?.string,
-                latitude: row.column("latitude")?.double,
-                longitude: row.column("longitude")?.double,
-                website: nil,
-                facebook: nil,
-                twitter: nil,
-                youtube: nil,
-                otherMedia: nil,
-                seasons: [],
-                payments: [],
-                products: [],
-                reviews: [],
-                location: nil
-            )
+        do {
+            let (mediaResults, seasons, payments, products, location) = try await (media, seasons, payments, products, location)
+            
+            market.website = mediaResults.website
+            market.facebook = mediaResults.facebook
+            market.twitter = mediaResults.twitter
+            market.youtube = mediaResults.youtube
+            market.otherMedia = mediaResults.otherMedia
+            market.seasons = seasons
+            market.payments = payments
+            market.products = products
+            market.location = location
+        } catch {
+            print("Error loading additional data for market \(market.fmid): \(error.localizedDescription)")
+            throw error
         }
     }
 
-    private func loadAdditionalData(for market: inout Market, connection: MySQLConnection) async throws {
-        async let media = loadMedia(for: market.fmid, connection: connection)
-        async let seasons = loadSeasons(for: market.fmid, connection: connection)
-        async let payments = loadPayments(for: market.fmid, connection: connection)
-        async let products = loadProducts(for: market.fmid, connection: connection)
-        async let reviews = loadReviews(for: market.fmid, connection: connection)
-        async let location = loadLocation(for: market.zip, connection: connection)
-
-        let mediaResults = try await media
-        market.website = mediaResults.website
-        market.facebook = mediaResults.facebook
-        market.twitter = mediaResults.twitter
-        market.youtube = mediaResults.youtube
-        market.otherMedia = mediaResults.otherMedia
-
-        market.seasons = try await seasons
-        market.payments = try await payments
-        market.products = try await products
-        market.reviews = try await reviews
-        market.location = try await location
-    }
-
-    // MARK: - Detail Loading Functions
-
-    private func loadMedia(for fmid: Int, connection: MySQLConnection) async throws -> (
+    // MARK: - Detailed Data Loading
+    
+    private func loadMedia(for fmid: Int) async throws -> (
         website: String?, facebook: String?, twitter: String?, youtube: String?, otherMedia: String?
     ) {
         let query = "SELECT media, url FROM FMMedia WHERE fmid = ?"
-        let rows = try await connection.query(query, [MySQLData(string: String(fmid))]).get()
+        
+        do {
+            let rows = try await connection!.query(query, [
+                .init(int: fmid)
+            ]).get()
+            var result: (String?, String?, String?, String?, String?) = (nil, nil, nil, nil, nil)
 
-        var result: (String?, String?, String?, String?, String?) = (nil, nil, nil, nil, nil)
+            for row in rows {
+                guard let media = row.column("media")?.string,
+                      let url = row.column("url")?.string else { continue }
 
-        for row in rows {
-            guard let media = row.column("media")?.string,
-                  let url = row.column("url")?.string else { continue }
-
-            switch media.lowercased() {
-            case "website": result.0 = url
-            case "facebook": result.1 = url
-            case "twitter": result.2 = url
-            case "youtube": result.3 = url
-            default: result.4 = url
+                switch media.lowercased() {
+                case "website": result.0 = url
+                case "facebook": result.1 = url
+                case "twitter": result.2 = url
+                case "youtube": result.3 = url
+                default: result.4 = url
+                }
             }
+            return result
+        } catch {
+            throw DatabaseError.queryFailed("Media query failed: \(error.localizedDescription)")
         }
-
-        return result
     }
 
-    private func loadSeasons(for fmid: Int, connection: MySQLConnection) async throws -> [Season] {
+    private func loadSeasons(for fmid: Int) async throws -> [Season] {
         let query = "SELECT season, dates, hours FROM FMOpen WHERE fmid = ? ORDER BY season"
-        let rows = try await connection.query(query, [MySQLData(string: String(fmid))]).get()
-
-        return rows.compactMap { row in
-            guard let season = row.column("season")?.int,
-                  let dates = row.column("dates")?.string,
-                  let hours = row.column("hours")?.string else {
-                return nil
+        
+        do {
+            let rows = try await connection!.query(query, [
+                .init(int: fmid)
+            ]).get()
+            var seasons: [Season] = []
+            
+            for row in rows {
+                guard let season = row.column("season")?.int,
+                      let dates = row.column("dates")?.string,
+                      let hours = row.column("hours")?.string else {
+                    continue
+                }
+                seasons.append(Season(seasonNumber: season, dates: dates, hours: hours))
             }
-            return Season(seasonNumber: season, dates: dates, hours: hours)
+            return seasons
+        } catch {
+            throw DatabaseError.queryFailed("Seasons query failed: \(error.localizedDescription)")
         }
     }
 
-    private func loadPayments(for fmid: Int, connection: MySQLConnection) async throws -> [PaymentType] {
+    private func loadPayments(for fmid: Int) async throws -> [PaymentType] {
         let query = "SELECT type FROM FMPayment WHERE fmid = ?"
-        let rows = try await connection.query(query, [MySQLData(string: String(fmid))]).get()
-
-        return rows.compactMap { row in
-            guard let typeString = row.column("type")?.string else { return nil }
-            return PaymentType(rawValue: typeString)
+        
+        do {
+            let rows = try await connection!.query(query, [
+                .init(int: fmid)
+            ]).get()
+            var payments: [PaymentType] = []
+            
+            for row in rows {
+                guard let typeString = row.column("type")?.string,
+                      let paymentType = PaymentType(rawValue: typeString) else {
+                    continue
+                }
+                payments.append(paymentType)
+            }
+            return payments
+        } catch {
+            throw DatabaseError.queryFailed("Payments query failed: \(error.localizedDescription)")
         }
     }
 
-    private func loadProducts(for fmid: Int, connection: MySQLConnection) async throws -> [Product] {
+    private func loadProducts(for fmid: Int) async throws -> [Product] {
         let query = """
         SELECT c.name as category, 
                EXISTS(SELECT 1 FROM FMProduct p2 
@@ -168,135 +234,80 @@ class DatabaseManager {
         JOIN FMCategory c ON p.categoryid = c.id
         WHERE p.fmid = ?
         """
-        let fmidData = MySQLData(string: String(fmid))
-        let rows = try await connection.query(query, [fmidData, fmidData]).get()
-
-        return rows.compactMap { row in
-            guard let category = row.column("category")?.string,
-                  let isOrganic = row.column("isOrganic")?.bool else {
-                return nil
+        
+        do {
+            let rows = try await connection!.query(query, [
+                .init(int: fmid),
+                .init(int: fmid)
+            ]).get()
+            
+            var products: [Product] = []
+            for row in rows {
+                guard let category = row.column("category")?.string,
+                      let isOrganic = row.column("isOrganic")?.bool else {
+                    continue
+                }
+                products.append(Product(category: category, isOrganic: isOrganic))
             }
-            return Product(category: category, isOrganic: isOrganic)
+            return products
+        } catch {
+            throw DatabaseError.queryFailed("Products query failed: \(error.localizedDescription)")
         }
     }
 
-    private func loadReviews(for fmid: Int, connection: MySQLConnection) async throws -> [Review] {
-        let query = "SELECT reviewer, comment, stars FROM FMReview WHERE fmid = ?"
-        let rows = try await connection.query(query, [MySQLData(string: String(fmid))]).get()
-
-        return rows.compactMap { row in
-            guard let reviewer = row.column("reviewer")?.string,
-                  let comment = row.column("comment")?.string,
-                  let stars = row.column("stars")?.int else {
-                return nil
-            }
-            return Review(reviewer: reviewer, comment: comment, stars: stars, date: nil)
-        }
-    }
-
-    private func loadLocation(for zip: String?, connection: MySQLConnection) async throws -> Location? {
+    private func loadLocation(for zip: String?) async throws -> Location? {
         guard let zip = zip else { return nil }
+        
         let query = """
         SELECT latitude, longitude, city, state, county 
         FROM Location WHERE zip = ?
         LIMIT 1
         """
-        let rows = try await connection.query(query, [MySQLData(string: zip)]).get()
-
-        guard let row = rows.first,
-              let latitude = row.column("latitude")?.double,
-              let longitude = row.column("longitude")?.double,
-              let city = row.column("city")?.string,
-              let state = row.column("state")?.string,
-              let county = row.column("county")?.string else {
-            return nil
+        
+        do {
+            let rows = try await connection!.query(query, [
+                .init(string: zip)
+            ]).get()
+            guard let row = rows.first else { return nil }
+            
+            guard let latitude = row.column("latitude")?.double,
+                  let longitude = row.column("longitude")?.double,
+                  let city = row.column("city")?.string,
+                  let state = row.column("state")?.string,
+                  let county = row.column("county")?.string else {
+                return nil
+            }
+            
+            return Location(
+                zip: zip,
+                latitude: latitude,
+                longitude: longitude,
+                city: city,
+                state: state,
+                county: county
+            )
+        } catch {
+            throw DatabaseError.queryFailed("Location query failed: \(error.localizedDescription)")
         }
-
-        return Location(zip: zip, latitude: latitude, longitude: longitude,
-                        city: city, state: state, county: county)
-    }
-
-    // MARK: - Public Access
-
-    func getAllMarkets() -> [Market] {
-        return allMarkets
-    }
-
-    func getMarket(by fmid: Int) -> Market? {
-        return allMarkets.first { $0.fmid == fmid }
-    }
-
-    // MARK: - Cleanup
-
-    func disconnect() {
-        try? connection?.close().wait()
-        try? eventLoopGroup.syncShutdownGracefully()
     }
 }
 
 enum DatabaseError: Error {
     case notConnected
-    case queryFailed
-    case invalidData
-}
-
-// Supporting Models
-
-struct Market {
-    let fmid: Int
-    let name: String
-    let street: String?
-    let city: String?
-    let county: String?
-    let state: String?
-    let zip: String?
-    let latitude: Double?
-    let longitude: Double?
-
-    var website: String?
-    var facebook: String?
-    var twitter: String?
-    var youtube: String?
-    var otherMedia: String?
-
-    var seasons: [Season]
-    var payments: [PaymentType]
-    var products: [Product]
-    var reviews: [Review]
-    var location: Location?
-}
-
-struct Season {
-    let seasonNumber: Int
-    let dates: String
-    let hours: String
-}
-
-enum PaymentType: String, CaseIterable {
-    case credit = "Credit"
-    case wic = "WIC"
-    case wicCash = "WICcash"
-    case sfmnp = "SFMNP"
-    case snap = "SNAP"
-}
-
-struct Product {
-    let category: String
-    let isOrganic: Bool
-}
-
-struct Review {
-    let reviewer: String
-    let comment: String
-    let stars: Int
-    let date: Date?
-}
-
-struct Location {
-    let zip: String
-    let latitude: Double
-    let longitude: Double
-    let city: String
-    let state: String
-    let county: String
+    case connectionFailed(String)
+    case queryFailed(String)
+    case invalidData(String)
+    
+    var localizedDescription: String {
+        switch self {
+        case .notConnected:
+            return "Not connected to database"
+        case .connectionFailed(let message):
+            return "Connection failed: \(message)"
+        case .queryFailed(let message):
+            return "Query failed: \(message)"
+        case .invalidData(let message):
+            return "Invalid data: \(message)"
+        }
+    }
 }
